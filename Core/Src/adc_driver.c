@@ -4,12 +4,12 @@
 #include <string.h>
 #include <math.h>
 
-/* ── 电压转换宏（差分补码 0~65535 → ±3.3V） ── */
+/* ────────── 电压转换宏 ────────── */
 #define ADC_FULLSCALE     32768.0f
 #define ADC_RAW_TO_MV(raw)  (3.3f * ((float)(uint16_t)(raw) / ADC_FULLSCALE - 1.0f) * 1000.0f)
 #define ADC_RAW_TO_V(raw)   (3.3f * ((float)(uint16_t)(raw) / ADC_FULLSCALE - 1.0f))
 
-/* ── LCD 布局 ── */
+/* ────────── 布局常量 ────────── */
 #define SW  240
 #define SH  320
 #define SX  0
@@ -20,88 +20,16 @@
 #define DH  24
 #define DV  40
 
-/* ── 示波器参数 ── */
-static float    g_v_div = 1.0f, g_s_div = 0.2f;
-static int      g_vi = 2, g_si = 0;
-static const float v_tbl[] = { 0.01f, 0.1f, 1.0f };
-static const float s_tbl[] = { 0.2f, 0.0002f, 0.00002f };
-static const char  *s_lbl[] = { "0.2s/div", "0.2ms/div", "20us/div" };
-
+/* ────────── 波形状态 ────────── */
+static float    g_v_div = 1.0f;
 static int32_t  g_vert_offset_mv = 0;
 
-/* ── 波形历史缓冲区 ── */
 static int16_t  g_h1[HS], g_h2[HS];
 static uint32_t g_hi = 0;
-static float    g_fps = 0;
-static uint32_t g_fc = 0, g_ft = 0;
-static int      g_meas_frame = 0;
 
-static int      g_grid_drawn = 0;
-static float    g_last_grid_v = -1.0f;
-
-/* ── 外部 ADC 数据（由 main.c 中的 HAL_ADC_ConvCpltCallback 更新） ── */
 extern uint32_t adc_dual_buffer[16];
-extern float diff_voltage_1, diff_voltage_2;
 
-/* ── 采样率 (TIM3 触发 20 Hz) ── */
-#define ADC_SAMPLE_RATE  20.0f
-#define SAMPLES_PER_CALL 16
-
-/* ══════════ 波形采集 ══════════ */
-static void wave_cap(void) {
-    /* 每次 HAL_ADC_ConvCpltCallback 触发时提供 16 个双通道采样点 */
-    for (int i = 0; i < SAMPLES_PER_CALL; i++) {
-        uint32_t combined = adc_dual_buffer[i];
-        uint16_t raw1 = (uint16_t)(combined & 0xFFFF);
-        uint16_t raw2 = (uint16_t)((combined >> 16) & 0xFFFF);
-
-        uint32_t hi_pos = g_hi % HS;
-        g_h1[hi_pos] = (int16_t)raw1;
-        g_h2[hi_pos] = (int16_t)raw2;
-        g_hi++;
-    }
-}
-
-/* ── 网格绘制 ── */
-static void draw_grid(void) {
-    if (g_grid_drawn && g_v_div == g_last_grid_v) return;
-    g_last_grid_v = g_v_div;
-    LCD_FillRect(SX, SY, SX + SW, SY + SH, LCD_BLACK);
-
-    for (int d = 0; d <= 8; d++) {
-        int y = SY + d * DV; if (y > SY + SH) y = SY + SH;
-        uint16_t clr = (d == 4) ? 0xC618 : 0x2104;
-        if (d == 4) {
-            for (int dy = -1; dy <= 1; dy++) {
-                int yy = y + dy; if (yy < SY || yy > SY + SH) continue;
-                LCD_FillRect(SX, yy, SX + SW - 1, yy, clr);
-            }
-        } else {
-            for (int x = SX; x < SX + SW; x += 12)
-                LCD_FillRect(x, y, x + 2, y, clr);
-        }
-        char lb[8]; int val_mv = (int)((4 - d) * g_v_div * 1000.0f);
-        snprintf(lb, 8, "%+dmV", val_mv);
-        LCD_DrawString(SX + 2, y - 6, lb, 0xC618, LCD_BLACK);
-    }
-
-    for (int d = 0; d <= 10; d++) {
-        int x = SX + d * DH; if (x >= SX + SW) x = SX + SW - 1;
-        uint16_t clr = (d == 5) ? 0xC618 : 0x2104;
-        if (d == 5) {
-            for (int dx = -1; dx <= 1; dx++) {
-                int xx = x + dx; if (xx < SX || xx >= SX + SW) continue;
-                LCD_FillRect(xx, SY, xx, SY + SH - 1, clr);
-            }
-        } else {
-            for (int y = SY; y < SY + SH; y += 12)
-                LCD_FillRect(x, y, x, y + 2, clr);
-        }
-    }
-    g_grid_drawn = 1;
-}
-
-/* ── 电压 → 像素 Y ── */
+/* ────────── 电压 → 屏幕 Y 坐标 ────────── */
 static int v2y(float mv) {
     int c = SY + 4 * DV;
     float mpx = (g_v_div * 1000.0f) / (float)DV;
@@ -111,123 +39,165 @@ static int v2y(float mv) {
     return y;
 }
 
-/* ── 波形绘制 ── */
-static void draw_wf(const int16_t *h, uint32_t st, uint32_t cnt, uint16_t clr) {
-    if (cnt < 2) return;
-    int px = SX;
-    float mv0 = ADC_RAW_TO_MV((int32_t)h[st % HS]);
-    int py = v2y(mv0);
-    LCD_DrawPixel((uint16_t)px, (uint16_t)py, clr);
-    for (uint32_t i = 1; i < cnt; i++) {
-        float mv1 = ADC_RAW_TO_MV((int32_t)h[(st + i) % HS]);
-        int cx = SX + (int)i, cy = v2y(mv1);
-        int dy = cy - py, dx = cx - px;
-        int s = (dy < 0 ? -dy : dy) > dx ? (dy < 0 ? -dy : dy) : dx;
-        if (s < 1) s = 1;
-        int last_y = -999;
-        for (int k = 0; k <= s; k += 2) {
-            int x = px + (dx * k) / s, y = py + (dy * k) / s;
-            if (x >= SX && x < SX + SW && y >= SY && y < SY + SH) {
-                if (y != last_y) {
-                    LCD_DrawPixel((uint16_t)x, (uint16_t)y, clr);
-                    last_y = y;
-                }
-            }
-        }
-        px = cx; py = cy;
+/* ═══════════════════════════════════════
+ *  6 个屏幕驱动测试函数
+ * ═══════════════════════════════════════ */
+
+/* 测试 1 ── 红绿蓝白纯色填充 */
+void LCD_Test_FillColors(void) {
+    uint16_t colors[] = { LCD_RED, LCD_GREEN, LCD_BLUE, LCD_WHITE, LCD_BLACK };
+    for (int i = 0; i < 5; i++) {
+        LCD_FillColor(colors[i]);
+        HAL_Delay(500);
+    }
+    LCD_FillColor(LCD_BLACK);
+}
+
+/* 测试 2 ── 四角画色块 */
+void LCD_Test_CornerBlocks(void) {
+    LCD_FillRect(0, 0, 50, 50, LCD_RED);
+    LCD_FillRect(0, LCD_GetHeight() - 50, 50, LCD_GetHeight() - 1, LCD_GREEN);
+    LCD_FillRect(LCD_GetWidth() - 50, 0, LCD_GetWidth() - 1, 50, LCD_BLUE);
+    LCD_FillRect(LCD_GetWidth() - 50, LCD_GetHeight() - 50, LCD_GetWidth() - 1, LCD_GetHeight() - 1, LCD_WHITE);
+}
+
+/* 测试 3 ── 十字交叉线 */
+void LCD_Test_Cross(void) {
+    int w = LCD_GetWidth(), h = LCD_GetHeight();
+    LCD_FillColor(LCD_BLACK);
+    for (int i = 0; i < w; i++) LCD_DrawPixel(i, h / 2, LCD_RED);
+    for (int i = 0; i < h; i++) LCD_DrawPixel(w / 2, i, LCD_YELLOW);
+    LCD_DrawString(10, 10, "CROSS OK", LCD_GREEN, LCD_BLACK);
+}
+
+/* 测试 4 ── 字体与颜色 */
+void LCD_Test_Text(void) {
+    LCD_FillColor(LCD_BLACK);
+    LCD_DrawString(10, 10, "Hello World!", LCD_WHITE, LCD_BLACK);
+    LCD_DrawString(10, 30, "Red Text", LCD_RED, LCD_BLACK);
+    LCD_DrawString(10, 50, "Green BG", LCD_WHITE, LCD_GREEN);
+    LCD_DrawString(10, 70, "12345", LCD_YELLOW, LCD_BLUE);
+}
+
+/* 测试 5 ── 渐变彩条 */
+void LCD_Test_Gradient(void) {
+    uint16_t colors[] = { LCD_RED, LCD_YELLOW, LCD_GREEN, LCD_CYAN, LCD_BLUE, LCD_MAGENTA, LCD_WHITE };
+    int band = LCD_GetHeight() / 7;
+    for (int i = 0; i < 7; i++)
+        LCD_FillRect(0, i * band, LCD_GetWidth() - 1, (i + 1) * band - 1, colors[i]);
+}
+
+/* 测试 6 ── 对角线 + 矩形边框 */
+void LCD_Test_DiagRect(void) {
+    int w = LCD_GetWidth(), h = LCD_GetHeight();
+    LCD_FillColor(LCD_BLACK);
+    /* 对角线 */
+    for (int i = 0; i < (w < h ? w : h); i++) LCD_DrawPixel(i, i, LCD_YELLOW);
+    /* 空心矩形边框 */
+    for (int i = 50; i < 150; i++) {
+        LCD_DrawPixel(i, 50, LCD_CYAN);
+        LCD_DrawPixel(i, 100, LCD_CYAN);
+        LCD_DrawPixel(50, i, LCD_CYAN);
+        LCD_DrawPixel(150, i, LCD_CYAN);
     }
 }
 
-/* ── 测量计算 ── */
-static void calc_meas(const int16_t *h, float *freq, float *ampl, float *vmin, float *vmax) {
-    uint32_t n_meas = g_hi;
-    int32_t minv = 32767, maxv = -32767; int zc = 0, lz = -1;
-    for (uint32_t i = n_meas > 240 ? n_meas - 240 : 0; i < n_meas; i++) {
-        int16_t v = h[i % HS];
-        if (v < minv) minv = v; if (v > maxv) maxv = v;
-        if (i > (n_meas > 240 ? n_meas - 240 : 0) && v >= 0 && h[(uint32_t)(i - 1) % HS] < 0) {
-            if (lz > 0) { int p = (int)i - lz; if (p > 2) zc++; } lz = (int)i;
-        }
-    }
-    *freq = 0; *ampl = 0;
-    *vmin = ADC_RAW_TO_MV(minv);
-    *vmax = ADC_RAW_TO_MV(maxv);
-    if (zc > 1) {
-        float ap = (float)(n_meas - (n_meas > 240 ? n_meas - 240 : 0)) / (float)(zc);
-        *freq = ADC_SAMPLE_RATE * (float)SAMPLES_PER_CALL / ap;
-    }
-    *ampl = ADC_RAW_TO_V(maxv) - ADC_RAW_TO_V(minv);
-}
-
-/* ── 测量面板 ── */
-static void draw_meas(void) {
-    g_meas_frame++;
-    if (g_meas_frame % 4 != 0) return;
-
-    int x = IX, y = 4; char b[32];
-    float f1, a1, f2, a2, vmin1, vmax1, vmin2, vmax2;
-
-    LCD_FillRect(x + 1, 0, 319, SH, 0x0841);
-    for (int iy = 0; iy < SH; iy += 8) LCD_DrawPixel(x, iy, 0x4208);
-
-    LCD_DrawString(x + 4, y, "--- SCOPE ---", LCD_WHITE, 0x0841); y += 12;
-    snprintf(b, 32, "Ch:BOTH");
-    LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 12;
-    snprintf(b, 32, "V:%.4gV", (double)g_v_div);
-    LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 12;
-    snprintf(b, 32, "T:%s", s_lbl[g_si]);
-    LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 12;
-    snprintf(b, 32, "Rate:%.0fHz", (double)ADC_SAMPLE_RATE);
-    LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 12;
-    snprintf(b, 32, "FPS:%5.1f", (double)g_fps);
-    LCD_DrawString(x + 4, y, b, LCD_YELLOW, 0x0841); y += 14;
-
-    calc_meas(g_h1, &f1, &a1, &vmin1, &vmax1);
-    calc_meas(g_h2, &f2, &a2, &vmin2, &vmax2);
-
-    LCD_DrawString(x + 4, y, "-- CH1(MEAS) --", LCD_YELLOW, 0x0841); y += 12;
-    snprintf(b, 32, "F:%6.1fHz", (double)f1); LCD_DrawString(x + 4, y, b, LCD_GREEN, 0x0841); y += 12;
-    snprintf(b, 32, "Vpp:%7.2fmV", (double)(a1 * 1000.0f)); LCD_DrawString(x + 4, y, b, LCD_GREEN, 0x0841); y += 12;
-    snprintf(b, 32, "Min:%6.1f Max:%6.1fmV", (double)vmin1, (double)vmax1); LCD_DrawString(x + 4, y, b, 0x8410, 0x0841); y += 14;
-
-    LCD_DrawString(x + 4, y, "-- CH2(MEAS) --", LCD_CYAN, 0x0841); y += 12;
-    snprintf(b, 32, "F:%6.1fHz", (double)f2); LCD_DrawString(x + 4, y, b, LCD_GREEN, 0x0841); y += 12;
-    snprintf(b, 32, "Vpp:%7.2fmV", (double)(a2 * 1000.0f)); LCD_DrawString(x + 4, y, b, LCD_GREEN, 0x0841); y += 12;
-    snprintf(b, 32, "Min:%6.1f Max:%6.1fmV", (double)vmin2, (double)vmax2); LCD_DrawString(x + 4, y, b, 0x8410, 0x0841); y += 14;
-}
-
-/* ══════════ 主显示接口 ══════════ */
+/* ═══════════════════════════════════════
+ *  主示波器显示函数
+ * ═══════════════════════════════════════ */
 void ADC_DisplayOnLCD(void) {
-    wave_cap();
-    draw_grid();
+    /* 读取 ADC 数据 */
+    SCB_InvalidateDCache_by_Addr((uint32_t *)adc_dual_buffer, 64);
+    for (int i = 0; i < 16; i++) {
+        uint32_t combined = adc_dual_buffer[i];
+        g_h1[g_hi % HS] = (int16_t)(combined & 0xFFFF);
+        g_h2[g_hi % HS] = (int16_t)((combined >> 16) & 0xFFFF);
+        g_hi++;
+    }
 
-    uint32_t t = g_hi;
-    uint32_t dc = t < SP ? t : SP;
-    uint32_t si = t >= SP ? t - SP : 0;
-
-    static int g_skip_cnt = 0;
-    if (g_si != 2 || g_skip_cnt == 0) {
+    /* ── 网格 ── */
+    static int  g_grid_drawn = 0;
+    static float g_last_grid_v = -1.0f;
+    if (!g_grid_drawn || g_v_div != g_last_grid_v) {
+        g_last_grid_v = g_v_div;
         LCD_FillRect(SX, SY, SX + SW, SY + SH, LCD_BLACK);
         for (int d = 0; d <= 8; d++) {
             int y = SY + d * DV; if (y > SY + SH) y = SY + SH;
-            uint16_t glr = (d == 4) ? 0x630C : 0x2104;
-            for (int x = SX; x < SX + SW; x += 12) LCD_FillRect(x, y, x + 2, y, glr);
+            uint16_t clr = (d == 4) ? 0xC618 : 0x2104;
+            if (d == 4) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    int yy = y + dy; if (yy < SY || yy > SY + SH) continue;
+                    LCD_FillRect(SX, yy, SX + SW - 1, yy, clr);
+                }
+            } else {
+                for (int x = SX; x < SX + SW; x += 12)
+                    LCD_FillRect(x, y, x + 2, y, clr);
+            }
             char lb[8]; int val_mv = (int)((4 - d) * g_v_div * 1000.0f);
-            snprintf(lb, 8, "%+dmV", val_mv); LCD_DrawString(SX + 2, y - 6, lb, 0x8410, LCD_BLACK);
+            snprintf(lb, 8, "%+dmV", val_mv);
+            LCD_DrawString(SX + 2, y - 6, lb, 0xC618, LCD_BLACK);
         }
         for (int d = 0; d <= 10; d++) {
             int x = SX + d * DH; if (x >= SX + SW) x = SX + SW - 1;
-            uint16_t glr = (d == 5) ? 0x630C : 0x2104;
-            for (int y = SY; y < SY + SH; y += 12) LCD_FillRect(x, y, x, y + 2, glr);
+            uint16_t clr = (d == 5) ? 0xC618 : 0x2104;
+            if (d == 5) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int xx = x + dx; if (xx < SX || xx >= SX + SW) continue;
+                    LCD_FillRect(xx, SY, xx, SY + SH - 1, clr);
+                }
+            } else {
+                for (int y = SY; y < SY + SH; y += 12)
+                    LCD_FillRect(x, y, x, y + 2, clr);
+            }
         }
-        draw_wf(g_h1, si, dc, LCD_YELLOW);
-        draw_wf(g_h2, si, dc, LCD_CYAN);
+        g_grid_drawn = 1;
+    } else {
+        LCD_FillRect(SX, SY, SX + SW, SY + SH, LCD_BLACK);
     }
-    g_skip_cnt = (g_skip_cnt + 1) % 3;
 
-    draw_meas();
+    /* ── 波形 ── */
+    uint32_t dc = g_hi < SP ? g_hi : SP;
+    uint32_t si = g_hi >= SP ? g_hi - SP : 0;
+    for (uint32_t i = 0; i < dc; i++) {
+        float mv = ADC_RAW_TO_MV((int32_t)g_h1[(si + i) % HS]);
+        int y = v2y(mv);
+        if (y >= SY && y < SY + SH)
+            LCD_DrawPixel(SX + i, y, LCD_YELLOW);
+    }
+    for (uint32_t i = 0; i < dc; i++) {
+        float mv = ADC_RAW_TO_MV((int32_t)g_h2[(si + i) % HS]);
+        int y = v2y(mv);
+        if (y >= SY && y < SY + SH)
+            LCD_DrawPixel(SX + i, y, LCD_CYAN);
+    }
 
-    g_fc++;
-    uint32_t now = HAL_GetTick();
-    if (now - g_ft >= 1000) { g_fps = (float)g_fc * 1000.0f / (float)(now - g_ft); g_fc = 0; g_ft = now; }
+    /* ── 面板 ── */
+    {
+        char b[32];
+        int x = IX, y = 4;
+        LCD_FillRect(x + 1, 0, 319, SH, 0x0841);
+
+        LCD_DrawString(x + 4, y, "--- SCOPE ---", LCD_WHITE, 0x0841); y += 14;
+        snprintf(b, 32, "V:%dmV", (int)(g_v_div * 1000.0f));
+        LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 14;
+
+        /* 计算 Vpp */
+        int16_t min1 = 32767, max1 = -32768;
+        int16_t min2 = 32767, max2 = -32768;
+        uint32_t cnt = g_hi < HS ? g_hi : HS;
+        for (uint32_t i = 0; i < cnt; i++) {
+            int16_t v1 = g_h1[i], v2 = g_h2[i];
+            if (v1 < min1) min1 = v1;
+            if (v1 > max1) max1 = v1;
+            if (v2 < min2) min2 = v2;
+            if (v2 > max2) max2 = v2;
+        }
+        snprintf(b, 32, "CH1:%+dmV", (int)(ADC_RAW_TO_V((int32_t)max1) - ADC_RAW_TO_V((int32_t)min1)) * 1000);
+        LCD_DrawString(x + 4, y, b, LCD_YELLOW, 0x0841); y += 14;
+        snprintf(b, 32, "CH2:%+dmV", (int)(ADC_RAW_TO_V((int32_t)max2) - ADC_RAW_TO_V((int32_t)min2)) * 1000);
+        LCD_DrawString(x + 4, y, b, LCD_CYAN, 0x0841); y += 14;
+
+        snprintf(b, 32, "Cnt:%ld", (long)g_hi);
+        LCD_DrawString(x + 4, y, b, 0x8410, 0x0841);
+    }
 }
