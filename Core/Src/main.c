@@ -37,12 +37,19 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_BUF_SIZE  16
+#define ADC_BUF_SIZE  4  /* ← 从 16 改为 4: DMA 中断频率 = 20kHz/4 = 5kHz, 每个采样点都被存入 */
 ALIGN_32BYTES(uint32_t adc_dual_buffer[ADC_BUF_SIZE]) __attribute__((section(".RAM_D2"))) = {0};
-uint16_t adc1_raw = 0;
-uint16_t adc2_raw = 0;
-float diff_voltage_1 = 0.0f; // ADC1 ???
-float diff_voltage_2 = 0.0f; // ADC2 ???
+
+/* ── 波形历史缓冲 (ISR 写入 / 主线程读取) ── */
+#define HIST_LEN  480
+int16_t  g_hist1[HIST_LEN] = {0};
+int16_t  g_hist2[HIST_LEN] = {0};
+volatile uint32_t g_hist_idx  = 0;       /* 写入位置 */
+volatile uint32_t g_new_count  = 0;      /* 上次绘制后新增采样数 */
+
+/* 面板用 (保留) */
+float diff_voltage_1 = 0.0f;
+float diff_voltage_2 = 0.0f;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,29 +73,33 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint32_t adc_buffer[2]={0} ;
-float voltage[255]={0};
-float v_in9 = 0.0f;
-float v_in5 = 0.0f;
-float diff_voltage = 0.0f;
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance == ADC1)
     {
-        SCB_InvalidateDCache_by_Addr((uint32_t *)adc_dual_buffer, 64);
-        
-        uint32_t sum_adc1 = 0;
-        uint32_t sum_adc2 = 0;
-        for(int i = 0; i < ADC_BUF_SIZE; i++)
-        {
-            uint32_t combined_data = adc_dual_buffer[i];
-            sum_adc1 += (combined_data & 0xFFFF);
-            sum_adc2 += ((combined_data >> 16) & 0xFFFF);
+        /* 失效 D-Cache (Cache 关闭时无害) */
+        SCB_InvalidateDCache_by_Addr((uint32_t *)adc_dual_buffer, ADC_BUF_SIZE * 4);
+
+        /* 平均一次用于面板电压显示 */
+        uint32_t sum1 = 0, sum2 = 0;
+        for (int i = 0; i < ADC_BUF_SIZE; i++) {
+            uint32_t d = adc_dual_buffer[i];
+            int16_t raw1 = (int16_t)(d & 0xFFFF);
+            int16_t raw2 = (int16_t)((d >> 16) & 0xFFFF);
+		
+            /* 存入波形历史缓冲 */
+            g_hist1[g_hist_idx % HIST_LEN] = raw1;
+            g_hist2[g_hist_idx % HIST_LEN] = raw2;
+            g_hist_idx++;
+            g_new_count++;
+
+            sum1 += raw1;
+            sum2 += raw2;
         }
-        uint16_t raw_diff_1 = sum_adc1 / ADC_BUF_SIZE;
-        uint16_t raw_diff_2 = sum_adc2 / ADC_BUF_SIZE;
-        diff_voltage_1 = 3.3f * ((float)raw_diff_1 / 32768.0f - 1.0f);
-        diff_voltage_2 = 3.3f * ((float)raw_diff_2 / 32768.0f - 1.0f);
+        uint16_t avg1 = sum1 / ADC_BUF_SIZE;
+        uint16_t avg2 = sum2 / ADC_BUF_SIZE;
+        diff_voltage_1 = 3.3f * ((float)avg1 / 32768.0f - 1.0f);
+        diff_voltage_2 = 3.3f * ((float)avg2 / 32768.0f - 1.0f);
     }
 }
 /* USER CODE END 0 */
@@ -134,10 +145,13 @@ int main(void)
   MX_ADC2_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  /* ==== 在启动 ADC 之前测试屏幕 ==== */
   LCD_Init();
-  LCD_Test_FillColors();
-  /* ==== 测试结束, 继续 ADC 初始化 ==== */
+	HAL_GPIO_WritePin(PGA1_0_GPIO_Port,PGA1_0_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(PGA1_1_GPIO_Port,PGA1_1_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(PGA1_2_GPIO_Port,PGA1_2_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(PGA2_0_GPIO_Port,PGA2_0_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_15,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(PGA2_2_GPIO_Port,PGA2_2_Pin,GPIO_PIN_SET);
 	if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET, ADC_DIFFERENTIAL_ENDED) != HAL_OK)
 		{
       Error_Handler();
@@ -151,20 +165,22 @@ int main(void)
       Error_Handler();
   }
 	HAL_TIM_Base_Start(&htim3);
-	HAL_GPIO_WritePin(LCD_LED_GPIO_Port,LCD_LED_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(LCD_LED_GPIO_Port, LCD_LED_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    LCD_Test_FillColors();
-    //ADC_DisplayOnLCD();
-    HAL_Delay(30);
+    /* 只在有足够新数据时才刷新 (≥4 个采样点, 避免空刷新) */
+    if (g_new_count >= 4) {
+        ADC_DisplayOnLCD();
+        g_new_count = 0;
+    }
+    HAL_Delay(10);  /* 轻量轮询 */
   }
   /* USER CODE END 3 */
 }
