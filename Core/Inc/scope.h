@@ -43,7 +43,10 @@ typedef enum {
     TIMEBASE_COUNT
 } ScopeTimebase;
 
-/* 当前实际采样间隔 (由 TIM3 硬件决定, 单位 μs) */
+/* 硬件采样间隔 (由 TIM3 决定, 固定不变, 单位 μs) */
+extern float g_sample_interval_hw_us;
+
+/* 当前档位等效显示间隔 (μs) — 仅用于面板显示的 Fs, 不影响测量 */
 extern float g_sample_interval_us;
 
 /* ═══════════════════════════════════════
@@ -117,6 +120,9 @@ typedef struct {
     /* 触发搜索 */
     uint32_t trig_idx;        /* 触发点索引 */
     bool     frame_ready;     /* 新帧就绪 */
+
+    /* 降采样: 缓冲中每 decimation 个原始点取 1 个显示 */
+    uint32_t decimation;
 
     /* 实际采样率(Hz) 和 总采样计数 */
     float    sample_rate_hz;

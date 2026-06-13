@@ -159,6 +159,9 @@ int main(void)
   Encoder_Init();
 
   bool running = true;
+  bool page   = false;  /* false=波形页, true=测量页 */
+  uint32_t btn_down_tick = 0;
+  bool btn_was_down = false;
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -168,44 +171,50 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ── 按钮: 切换启停 ── */
-    if (Encoder_ButtonPressed()) {
-        running = !running;
-        if (running) {
-            Scope_Clear();                 /* 启动时清屏 */
+    /* ── 按钮: 短按启停, 长按(>800ms)切页 ── */
+    bool btn_now = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_11) == GPIO_PIN_RESET);
+    if (btn_now && !btn_was_down) {
+        btn_down_tick = HAL_GetTick();          /* 按下时刻 */
+    }
+    if (!btn_now && btn_was_down) {
+        uint32_t held = HAL_GetTick() - btn_down_tick;
+        if (held > 800) {
+            page = !page;                       /* 长按切页 */
+        } else if (held > 50) {
+            running = !running;                 /* 短按启停 */
+            if (running) { Scope_Clear(); }
         }
     }
+    btn_was_down = btn_now;
 
     if (running) {
-        /* ── 编码器: 切换时基 (纯软件降采样, 不动 TIM3) ── */
+        /* ── 编码器: 切换时基 ── */
         int32_t delta = Encoder_ReadDelta();
         if (delta != 0) {
             Scope_Clear();
-            if (delta > 0) {
+            if (delta > 0)
                 g_scope.timebase = (g_scope.timebase + 1) % TIMEBASE_COUNT;
-            } else {
-                if (g_scope.timebase == 0) g_scope.timebase = TIMEBASE_COUNT - 1;
-                else g_scope.timebase = (g_scope.timebase - 1);
-            }
-            /* 更新采样间隔 (TIM3 固定 1MHz) */
+            else
+                g_scope.timebase = (g_scope.timebase == 0) ? TIMEBASE_COUNT - 1
+                                                            : (g_scope.timebase - 1);
             switch (g_scope.timebase) {
-                case TIMEBASE_20US_DIV:
-                    g_sample_interval_us = 1.0f;   break;   /* 1μs */
-                case TIMEBASE_200US_DIV:
-                    g_sample_interval_us = 10.0f;  break;   /* 10μs */
-                case TIMEBASE_200MS_DIV:
-                    g_sample_interval_us = 10000.0f; break; /* 10ms */
+                case TIMEBASE_20US_DIV:  g_scope.decimation = 1;   break;
+                case TIMEBASE_200US_DIV: g_scope.decimation = 1;   break;
+                case TIMEBASE_200MS_DIV: g_scope.decimation = 10;  break;
                 default: break;
             }
+            g_sample_interval_us = g_sample_interval_hw_us * (float)g_scope.decimation;
         }
 
         Scope_ProcessFrame();
         Scope_Measure();
         if (g_scope.frame_ready) {
-            Scope_Draw();
+            if (page)
+                Scope_DrawParams();   /* 页 2: 全屏测量 */
+            else
+                Scope_Draw();         /* 页 1: 波形 */
         }
     } else {
-        /* 冻结: 保留波形, 只叠暂停文字 */
         LCD_DrawString(60, 140, "PAUSED", LCD_RED, LCD_BLACK);
     }
     HAL_Delay(10);
