@@ -60,7 +60,7 @@ void Scope_Init(void) {
     }
 }
 
-/* ISR: 全速存入每个点 */
+/* ISR: 全速存入每个点. */
 void Scope_PushSample(int16_t raw1, int16_t raw2) {
     uint32_t idx = g_scope.wr_idx % SCOPE_BUF_LEN;
     g_scope.buf1[idx] = raw1;
