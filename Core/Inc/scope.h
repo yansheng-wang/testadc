@@ -46,6 +46,9 @@ typedef enum {
 /* 硬件采样间隔 (由 TIM3 决定, 固定不变, 单位 μs) */
 extern float g_sample_interval_hw_us;
 
+/* ADC 真实采样间隔 (由 SamplingTime 决定, 单位 μs) */
+extern float g_adc_interval_us;
+
 /* 当前档位等效显示间隔 (μs) — 仅用于面板显示的 Fs, 不影响测量 */
 extern float g_sample_interval_us;
 
@@ -53,7 +56,8 @@ extern float g_sample_interval_us;
  *  垂直灵敏度 (需求第4条)
  * ═══════════════════════════════════════ */
 typedef enum {
-    VERT_100MV_DIV = 0,      /* 0.1 V/div */
+    VERT_10MV_DIV = 0,      /* 0.01 V/div */
+    VERT_100MV_DIV,          /* 0.1 V/div */
     VERT_1V_DIV,             /* 1 V/div */
     VERT_COUNT
 } ScopeVertScale;
@@ -124,6 +128,10 @@ typedef struct {
     /* 降采样: 缓冲中每 decimation 个原始点取 1 个显示 */
     uint32_t decimation;
 
+    /* 用户界面编辑模式 (0=TB, 1=VS, 2=CPL) */
+    int edit_mode;
+    bool coupling_ac;
+
     /* 实际采样率(Hz) 和 总采样计数 */
     float    sample_rate_hz;
     uint32_t total_samples;
@@ -168,9 +176,9 @@ void Scope_Measure(void);
 
 /* ── 辅助: ADC原始值 → 电压(mV) ── */
 static inline float Scope_Raw2mV(int16_t raw) {
-    /* 差分 ADC, 0V 输入对应 32768。
-       已知: Converted_value = 32768 * (1 + Vdiff/3.3)
-       反推: Vdiff = 3.3 * (raw/32768 - 1) */
+    /* 差分 ADC 16位有符号读数:
+       0 = −Vref, 32768 = 0V, 65535 = +Vref
+       直接用 (uint16_t)raw 保持符号正确 */
     return 3.3f * ((float)(uint16_t)(raw) / 32768.0f - 1.0f) * 1000.0f;
 }
 

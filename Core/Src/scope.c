@@ -10,10 +10,11 @@
 #include <string.h>
 #include <math.h>
 
-float g_sample_interval_hw_us = 1.0f;  /* 硬件固定 (TIM3 → 1μs) */
-float g_sample_interval_us = 1.0f;     /* 时序信息 (含降采样) */
+float g_sample_interval_hw_us = 1.0f;
+float g_adc_interval_us = 1.0f;        /* ADC 真实采样间隔 (由 SamplingTime 决定) */
+float g_sample_interval_us = 1.0f;
 
-const float scope_vdiv_mv[VERT_COUNT] = { 100.0f, 1000.0f };
+const float scope_vdiv_mv[VERT_COUNT] = { 10.0f, 100.0f, 1000.0f };
 
 #define SCOPE_BUF_LEN  2048
 static int16_t scope_buf1[SCOPE_BUF_LEN];
@@ -61,7 +62,15 @@ void Scope_Init(void) {
 }
 
 /* ISR: 全速存入每个点. */
+/* 软件 AC 耦合: 指数移动平均, α = 0.01 */
+static float ema_buf2 = 0.0f;
+
 void Scope_PushSample(int16_t raw1, int16_t raw2) {
+    /* 每次累积 EMA, 用于减去直流成份 */
+    if (g_scope.wr_idx == 0) ema_buf2 = (float)raw2;
+    ema_buf2 = ema_buf2 * 0.99f + (float)raw2 * 0.01f;
+    raw2 = (int16_t)((float)raw2 - ema_buf2);
+
     uint32_t idx = g_scope.wr_idx % SCOPE_BUF_LEN;
     g_scope.buf1[idx] = raw1;
     g_scope.buf2[idx] = raw2;
@@ -122,7 +131,7 @@ void Scope_ProcessFrame(void) {
 }
 
 /* 测量: 按 decimation 跳点 */
-static void do_measure(const int16_t *buf, uint32_t start, uint32_t len,
+static void  do_measure(const int16_t *buf, uint32_t start, uint32_t len,
                        ScopeMeasure *m) {
     if (len < 4) { m->valid = false; return; }
     uint32_t step = g_scope.decimation; if (step < 1) step = 1;
@@ -154,7 +163,7 @@ static void do_measure(const int16_t *buf, uint32_t start, uint32_t len,
     }
 
     if (crossings >= 2) {
-        float dt_us = (float)(last_edge - first_edge) * g_sample_interval_hw_us * (float)step;
+        float dt_us = (float)(last_edge - first_edge) * g_adc_interval_us * (float)step;
         float period_us = dt_us / (float)(crossings - 1);
         if (period_us > 0.0f)
             m->freq_hz = 1000000.0f / period_us;
@@ -187,9 +196,8 @@ void Scope_Clear(void) {
 /* 波形页 */
 void Scope_Draw(void) {
     if (!g_scope.frame_ready) {
-        /* 仅首帧: 画一个红色方块验证 LCD 能显示 */
-        static int once = 0;
-        if (!once) { LCD_FillRect(0, 0, 50, 50, LCD_RED); once = 1; }
+        LCD_FillRect(SCOPE_X0, SCOPE_Y0, SCOPE_X0 + SCOPE_W - 1, SCOPE_Y0 + SCOPE_H - 1, LCD_BLACK);
+        LCD_DrawString(SCOPE_X0 + 20, SCOPE_Y0 + 100, "WAIT...", 0x8410, LCD_BLACK);
         return;
     }
 
@@ -242,19 +250,30 @@ void Scope_Draw(void) {
         prev_y1 = y1; prev_y2 = y2;
     }
 
-    /* 面板 */
+    /* 面板 — 根据 edit_mode 高亮当前编辑项 */
     int px_p = SCOPE_X0 + SCOPE_W + 4;
     int py = 4;
     char b[40];
     LCD_DrawString(px_p, py, "DSO", LCD_WHITE, LCD_BLACK); py += 14;
 
+    /* 调试: 显示第一个点的原始 ADC 值 */
+    snprintf(b, 40, "R:%d", (int)g_scope.buf2[(start + 0) % SCOPE_BUF_LEN]);
+    LCD_DrawString(px_p, py, b, LCD_RED, LCD_BLACK); py += 14;
+
+    uint16_t clr_tb = (g_scope.edit_mode == 0) ? LCD_YELLOW : 0x8410;
+    uint16_t clr_vs = (g_scope.edit_mode == 1) ? LCD_YELLOW : 0x8410;
+    uint16_t clr_cp = (g_scope.edit_mode == 2) ? LCD_YELLOW : 0x8410;
+
     const char *tb[] = {"20us/div","0.2ms/div","0.2s/div"};
     snprintf(b, 40, "TB:%s", tb[g_scope.timebase]);
-    LCD_DrawString(px_p, py, b, LCD_YELLOW, LCD_BLACK); py += 14;
+    LCD_DrawString(px_p, py, b, clr_tb, LCD_BLACK); py += 14;
 
-    const char *vs[] = {"0.1V","1V"};
+    const char *vs[] = {"0.01V","0.1V","1V"};
     snprintf(b, 40, "VS:%s", vs[g_scope.vert_scale]);
-    LCD_DrawString(px_p, py, b, 0x8410, LCD_BLACK); py += 16;
+    LCD_DrawString(px_p, py, b, clr_vs, LCD_BLACK); py += 14;
+
+    snprintf(b, 40, "CPL:%s", g_scope.coupling_ac ? "AC" : "DC");
+    LCD_DrawString(px_p, py, b, clr_cp, LCD_BLACK); py += 14;
 
     const char *tm[] = {"Auto","Norm","Sing"};
     snprintf(b, 40, "Trg:%s", tm[g_scope.trigger.mode]);
@@ -289,7 +308,7 @@ void Scope_DrawParams(void) {
     LCD_DrawString(10, py, "MEASURE", LCD_WHITE, LCD_BLACK); py += 20;
 
     const char *tb[] = {"20us","0.2ms","0.2s"};
-    const char *vs[] = {"0.1V","1V"};
+    const char *vs[] = {"0.01V","0.1V","1V"};
     snprintf(b, 40, "TB:%s  VS:%s", tb[g_scope.timebase], vs[g_scope.vert_scale]);
     LCD_DrawString(10, py, b, 0x8410, LCD_BLACK); py += 24;
 
