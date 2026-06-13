@@ -177,34 +177,26 @@ int main(void)
     }
 
     if (running) {
-        /* ── 编码器: 切换时基 (换档前清数据) ── */
+        /* ── 编码器: 切换时基 (纯软件降采样, 不动 TIM3) ── */
         int32_t delta = Encoder_ReadDelta();
         if (delta != 0) {
-            Scope_Clear();               /* 先清数据 */
+            Scope_Clear();
             if (delta > 0) {
                 g_scope.timebase = (g_scope.timebase + 1) % TIMEBASE_COUNT;
             } else {
                 if (g_scope.timebase == 0) g_scope.timebase = TIMEBASE_COUNT - 1;
                 else g_scope.timebase = (g_scope.timebase - 1);
             }
-            /* 停止→写寄存器→产生更新事件→重启, 确保立即生效 */
-            HAL_TIM_Base_Stop(&htim3);
+            /* 更新采样间隔 (TIM3 固定 1MHz) */
             switch (g_scope.timebase) {
                 case TIMEBASE_20US_DIV:
-                    TIM3->PSC = 2;   TIM3->ARR = 79;   break;
+                    g_sample_interval_us = 1.0f;   break;   /* 1μs */
                 case TIMEBASE_200US_DIV:
-                    TIM3->PSC = 23;  TIM3->ARR = 99;   break;
+                    g_sample_interval_us = 10.0f;  break;   /* 10μs */
                 case TIMEBASE_200MS_DIV:
-                    TIM3->PSC = 23999; TIM3->ARR = 99; break;
+                    g_sample_interval_us = 10000.0f; break; /* 10ms */
                 default: break;
             }
-            TIM3->EGR = TIM_EGR_UG;
-            TIM3->CNT = 0;
-            HAL_TIM_Base_Start(&htim3);
-            g_sample_interval_us =
-                1000000.0f / ((float)HAL_RCC_GetPCLK1Freq() * 2.0f
-                / (float)(TIM3->PSC + 1)
-                / (float)(TIM3->ARR + 1));
         }
 
         Scope_ProcessFrame();
