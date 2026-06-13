@@ -4,16 +4,6 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -40,19 +30,28 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_BUF_SIZE  4  /* ← 从 16 改为 4: DMA 中断频率 = 20kHz/4 = 5kHz, 每个采样点都被存入 */
+/* ADC1 双模式 (保留未启用) */
+#define ADC_BUF_SIZE  4
 ALIGN_32BYTES(uint32_t adc_dual_buffer[ADC_BUF_SIZE]) __attribute__((section(".RAM_D2"))) = {0};
 
-/* ── 波形历史缓冲 (ISR 写入 / 主线程读取) ── */
-#define HIST_LEN  480
-int16_t  g_hist1[HIST_LEN] = {0};
-int16_t  g_hist2[HIST_LEN] = {0};
-volatile uint32_t g_hist_idx  = 0;       /* 写入位置 */
-volatile uint32_t g_new_count  = 0;      /* 上次绘制后新增采样数 */
+/* ADC2 单通道 DMA (CH18, 差分, 16bit) */
+#define ADC2_BUF_SIZE  4
+ALIGN_32BYTES(uint16_t adc2_buf[ADC2_BUF_SIZE]) __attribute__((section(".RAM_D2"))) = {0};
 
-/* 面板用 (保留) */
+/* ── adc_driver.c 需要的旧版全局符号 (保留, 未使用) ── */
+#define HIST_LEN_OLD  480
+int16_t  g_hist1[HIST_LEN_OLD] = {0};
+int16_t  g_hist2[HIST_LEN_OLD] = {0};
+volatile uint32_t g_hist_idx  = 0;
 float diff_voltage_1 = 0.0f;
 float diff_voltage_2 = 0.0f;
+
+/* ── 三档采样时间 (ADC_CLK=20MHz, DIV4) ── */
+static const uint32_t sampling_times[] = {
+    ADC_SAMPLETIME_8CYCLES_5,    /*  8.5 周期 → ~1.05µs/点 →  200µs/屏 */
+    ADC_SAMPLETIME_64CYCLES_5,   /* 64.5 周期 → ~3.85µs/点 →  770µs/屏 */
+    ADC_SAMPLETIME_387CYCLES_5,  /* 387.5周期 → ~20.0µs/点 → 4.0ms/屏 */
+};
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -78,19 +77,35 @@ static void MPU_Config(void);
 /* USER CODE BEGIN 0 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
-    if (hadc->Instance == ADC1)
+    if (hadc->Instance == ADC2)
     {
-        SCB_InvalidateDCache_by_Addr((uint32_t *)adc_dual_buffer, ADC_BUF_SIZE * 4);
+        SCB_InvalidateDCache_by_Addr((uint32_t *)adc2_buf, ADC2_BUF_SIZE * 2);
 
-        for (int i = 0; i < ADC_BUF_SIZE; i++) {
-            uint32_t d = adc_dual_buffer[i];
-            int16_t raw1 = (int16_t)(d & 0xFFFF);
-            int16_t raw2 = (int16_t)((d >> 16) & 0xFFFF);
-
-            /* 喂入示波器引擎 */
-            Scope_PushSample(raw1, raw2);
+        for (int i = 0; i < ADC2_BUF_SIZE; i++) {
+            int16_t raw = (int16_t)adc2_buf[i];
+            Scope_PushSample(0, raw);   /* CH1=0, CH2=raw */
         }
     }
+}
+
+static void set_adc2_sampling_time(uint32_t sampling_time)
+{
+    ADC_ChannelConfTypeDef sConfig = {0};
+    /* 先停止 */
+    HAL_ADC_Stop_DMA(&hadc2);
+
+    sConfig.Channel = ADC_CHANNEL_18;
+    sConfig.Rank = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = sampling_time;
+    sConfig.SingleDiff = ADC_DIFFERENTIAL_ENDED;
+    sConfig.OffsetNumber = ADC_OFFSET_NONE;
+    sConfig.Offset = 0;
+    sConfig.OffsetSignedSaturation = DISABLE;
+    HAL_ADC_ConfigChannel(&hadc2, &sConfig);
+
+    /* 重新启动 */
+    HAL_ADCEx_Calibration_Start(&hadc2, ADC_CALIB_OFFSET, ADC_DIFFERENTIAL_ENDED);
+    HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, ADC2_BUF_SIZE);
 }
 /* USER CODE END 0 */
 
@@ -137,29 +152,22 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   LCD_Init();
-  Scope_Init();         /* 初始化示波器引擎 */
-  PGA_SET(1.0);         /* 默认 1x 增益 */
-	if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET, ADC_DIFFERENTIAL_ENDED) != HAL_OK)
-		{
-      Error_Handler();
-		}
+  Scope_Init();
+  PGA_SET(1.0);
+
   if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_CALIB_OFFSET, ADC_DIFFERENTIAL_ENDED) != HAL_OK)
-		{
       Error_Handler();
-		}
-	if (HAL_ADCEx_MultiModeStart_DMA(&hadc1, (uint32_t*)adc_dual_buffer, ADC_BUF_SIZE) != HAL_OK)
-  {
+
+  if (HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, ADC2_BUF_SIZE) != HAL_OK)
       Error_Handler();
-  }
-	HAL_TIM_Base_Start(&htim3);
-	HAL_GPIO_WritePin(LCD_LED_GPIO_Port, LCD_LED_Pin, GPIO_PIN_SET);
+
+  HAL_GPIO_WritePin(LCD_LED_GPIO_Port, LCD_LED_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
-  /* 编码器: 启动 TIM4 编码器模式 */
   Encoder_Init();
 
   bool running = true;
-  bool page   = false;  /* false=波形页, true=测量页 */
+  bool edit_tb = true;   /* true=TB采样时间, false=VS */
   uint32_t btn_down_tick = 0;
   bool btn_was_down = false;
 
@@ -171,48 +179,46 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ── 按钮: 短按启停, 长按(>800ms)切页 ── */
     bool btn_now = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_11) == GPIO_PIN_RESET);
-    if (btn_now && !btn_was_down) {
-        btn_down_tick = HAL_GetTick();          /* 按下时刻 */
-    }
+    if (btn_now && !btn_was_down) btn_down_tick = HAL_GetTick();
     if (!btn_now && btn_was_down) {
         uint32_t held = HAL_GetTick() - btn_down_tick;
-        if (held > 800) {
-            page = !page;                       /* 长按切页 */
-        } else if (held > 50) {
-            running = !running;                 /* 短按启停 */
-            if (running) { Scope_Clear(); }
+        if (held > 800)
+            edit_tb = !edit_tb;
+        else if (held > 50) {
+            running = !running;
+            if (running) Scope_Clear();
         }
     }
     btn_was_down = btn_now;
 
     if (running) {
-        /* ── 编码器: 切换时基 ── */
         int32_t delta = Encoder_ReadDelta();
         if (delta != 0) {
             Scope_Clear();
-            if (delta > 0)
-                g_scope.timebase = (g_scope.timebase + 1) % TIMEBASE_COUNT;
-            else
-                g_scope.timebase = (g_scope.timebase == 0) ? TIMEBASE_COUNT - 1
-                                                            : (g_scope.timebase - 1);
-            switch (g_scope.timebase) {
-                case TIMEBASE_20US_DIV:  g_scope.decimation = 1;   break;
-                case TIMEBASE_200US_DIV: g_scope.decimation = 1;   break;
-                case TIMEBASE_200MS_DIV: g_scope.decimation = 10;  break;
-                default: break;
+            if (edit_tb) {
+                /* ── 旋转修改 ADC 采样时间 (硬件时基) ── */
+                int cur = (int)g_scope.timebase;
+                if (delta > 0)
+                    cur = (cur + 1) % TIMEBASE_COUNT;
+                else
+                    cur = (cur == 0) ? TIMEBASE_COUNT - 1 : (cur - 1);
+                g_scope.timebase = (ScopeTimebase)cur;
+
+                set_adc2_sampling_time(sampling_times[g_scope.timebase]);
+            } else {
+                /* ── 旋转切换垂直灵敏度 ── */
+                int cur = (int)g_scope.vert_scale;
+                if (delta > 0) cur = (cur + 1) % VERT_COUNT;
+                else cur = (cur == 0) ? VERT_COUNT - 1 : (cur - 1);
+                g_scope.vert_scale = (ScopeVertScale)cur;
             }
-            g_sample_interval_us = g_sample_interval_hw_us * (float)g_scope.decimation;
         }
 
         Scope_ProcessFrame();
         Scope_Measure();
         if (g_scope.frame_ready) {
-            if (page)
-                Scope_DrawParams();   /* 页 2: 全屏测量 */
-            else
-                Scope_Draw();         /* 页 1: 波形 */
+            Scope_Draw();
         }
     } else {
         LCD_DrawString(60, 140, "PAUSED", LCD_RED, LCD_BLACK);
@@ -241,9 +247,6 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -258,12 +261,8 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
     Error_Handler();
-  }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
                               |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
@@ -276,21 +275,13 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
-  {
     Error_Handler();
-  }
 }
 
-/**
-  * @brief Peripherals Common Clock Configuration
-  * @retval None
-  */
 void PeriphCommonClock_Config(void)
 {
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /** Initializes the peripherals clock
-  */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
   PeriphClkInitStruct.PLL2.PLL2M = 4;
   PeriphClkInitStruct.PLL2.PLL2N = 10;
@@ -302,26 +293,13 @@ void PeriphCommonClock_Config(void)
   PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
   PeriphClkInitStruct.AdcClockSelection = RCC_ADCCLKSOURCE_PLL2;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
-  {
     Error_Handler();
-  }
 }
-
-/* USER CODE BEGIN 4 */
-
-/* USER CODE END 4 */
-
- /* MPU Configuration */
 
 void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
-
-  /* Disables the MPU */
   HAL_MPU_Disable();
-
-  /** Initializes and configures the Region and the memory to be protected
-  */
   MPU_InitStruct.Enable = MPU_REGION_ENABLE;
   MPU_InitStruct.Number = MPU_REGION_NUMBER0;
   MPU_InitStruct.BaseAddress = 0x0;
@@ -333,40 +311,15 @@ void MPU_Config(void)
   MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
   MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
   MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
-
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
-  /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-
 }
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
+  while (1) {}
 }
 #ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
-}
-#endif /* USE_FULL_ASSERT */
+void assert_failed(uint8_t *file, uint32_t line) { }
+#endif

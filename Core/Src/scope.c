@@ -91,7 +91,7 @@ void Scope_PushSample(int16_t raw1, int16_t raw2) {
             g_scope.trig_idx = idx;
         }
     }
-    g_scope.frame_ready = false;
+    /* 不移除 frame_ready — 让主循环控制显示帧 */
 }
 
 /* 帧处理: 全速缓冲, 按 decimation 跳点显示 */
@@ -186,7 +186,12 @@ void Scope_Clear(void) {
 
 /* 波形页 */
 void Scope_Draw(void) {
-    if (!g_scope.frame_ready) return;
+    if (!g_scope.frame_ready) {
+        /* 仅首帧: 画一个红色方块验证 LCD 能显示 */
+        static int once = 0;
+        if (!once) { LCD_FillRect(0, 0, 50, 50, LCD_RED); once = 1; }
+        return;
+    }
 
     uint32_t start = g_scope.disp_start;
     uint32_t len   = g_scope.disp_len;
