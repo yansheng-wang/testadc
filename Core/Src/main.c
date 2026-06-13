@@ -28,6 +28,9 @@
 /* USER CODE BEGIN Includes */
 #include "ILI9488.h"
 #include "adc_driver.h"
+#include "scope.h"
+#include "pga.h"
+#include "encoder.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -77,29 +80,16 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance == ADC1)
     {
-        /* 失效 D-Cache (Cache 关闭时无害) */
         SCB_InvalidateDCache_by_Addr((uint32_t *)adc_dual_buffer, ADC_BUF_SIZE * 4);
 
-        /* 平均一次用于面板电压显示 */
-        uint32_t sum1 = 0, sum2 = 0;
         for (int i = 0; i < ADC_BUF_SIZE; i++) {
             uint32_t d = adc_dual_buffer[i];
             int16_t raw1 = (int16_t)(d & 0xFFFF);
             int16_t raw2 = (int16_t)((d >> 16) & 0xFFFF);
-		
-            /* 存入波形历史缓冲 */
-            g_hist1[g_hist_idx % HIST_LEN] = raw1;
-            g_hist2[g_hist_idx % HIST_LEN] = raw2;
-            g_hist_idx++;
-            g_new_count++;
 
-            sum1 += raw1;
-            sum2 += raw2;
+            /* 喂入示波器引擎 */
+            Scope_PushSample(raw1, raw2);
         }
-        uint16_t avg1 = sum1 / ADC_BUF_SIZE;
-        uint16_t avg2 = sum2 / ADC_BUF_SIZE;
-        diff_voltage_1 = 3.3f * ((float)avg1 / 32768.0f - 1.0f);
-        diff_voltage_2 = 3.3f * ((float)avg2 / 32768.0f - 1.0f);
     }
 }
 /* USER CODE END 0 */
@@ -144,14 +134,11 @@ int main(void)
   MX_TIM3_Init();
   MX_ADC2_Init();
   MX_SPI1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   LCD_Init();
-	HAL_GPIO_WritePin(PGA1_0_GPIO_Port,PGA1_0_Pin,GPIO_PIN_SET);
-	HAL_GPIO_WritePin(PGA1_1_GPIO_Port,PGA1_1_Pin,GPIO_PIN_SET);
-	HAL_GPIO_WritePin(PGA1_2_GPIO_Port,PGA1_2_Pin,GPIO_PIN_SET);
-	HAL_GPIO_WritePin(PGA2_0_GPIO_Port,PGA2_0_Pin,GPIO_PIN_SET);
-	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_15,GPIO_PIN_SET);
-	HAL_GPIO_WritePin(PGA2_2_GPIO_Port,PGA2_2_Pin,GPIO_PIN_SET);
+  Scope_Init();         /* 初始化示波器引擎 */
+  PGA_SET(1.0);         /* 默认 1x 增益 */
 	if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET, ADC_DIFFERENTIAL_ENDED) != HAL_OK)
 		{
       Error_Handler();
@@ -168,6 +155,11 @@ int main(void)
 	HAL_GPIO_WritePin(LCD_LED_GPIO_Port, LCD_LED_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
+  /* 编码器: 启动 TIM4 编码器模式 */
+  Encoder_Init();
+
+  bool running = true;
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -175,12 +167,56 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* 只在有足够新数据时才刷新 (≥4 个采样点, 避免空刷新) */
-    if (g_new_count >= 4) {
-        ADC_DisplayOnLCD();
-        g_new_count = 0;
+
+    /* ── 按钮: 切换启停 ── */
+    if (Encoder_ButtonPressed()) {
+        running = !running;
+        if (running) {
+            Scope_Clear();                 /* 启动时清屏 */
+        }
     }
-    HAL_Delay(10);  /* 轻量轮询 */
+
+    if (running) {
+        /* ── 编码器: 切换时基 (换档前清数据) ── */
+        int32_t delta = Encoder_ReadDelta();
+        if (delta != 0) {
+            Scope_Clear();               /* 先清数据 */
+            if (delta > 0) {
+                g_scope.timebase = (g_scope.timebase + 1) % TIMEBASE_COUNT;
+            } else {
+                if (g_scope.timebase == 0) g_scope.timebase = TIMEBASE_COUNT - 1;
+                else g_scope.timebase = (g_scope.timebase - 1);
+            }
+            /* 停止→写寄存器→产生更新事件→重启, 确保立即生效 */
+            HAL_TIM_Base_Stop(&htim3);
+            switch (g_scope.timebase) {
+                case TIMEBASE_20US_DIV:
+                    TIM3->PSC = 2;   TIM3->ARR = 79;   break;
+                case TIMEBASE_200US_DIV:
+                    TIM3->PSC = 23;  TIM3->ARR = 99;   break;
+                case TIMEBASE_200MS_DIV:
+                    TIM3->PSC = 23999; TIM3->ARR = 99; break;
+                default: break;
+            }
+            TIM3->EGR = TIM_EGR_UG;
+            TIM3->CNT = 0;
+            HAL_TIM_Base_Start(&htim3);
+            g_sample_interval_us =
+                1000000.0f / ((float)HAL_RCC_GetPCLK1Freq() * 2.0f
+                / (float)(TIM3->PSC + 1)
+                / (float)(TIM3->ARR + 1));
+        }
+
+        Scope_ProcessFrame();
+        Scope_Measure();
+        if (g_scope.frame_ready) {
+            Scope_Draw();
+        }
+    } else {
+        /* 冻结: 保留波形, 只叠暂停文字 */
+        LCD_DrawString(60, 140, "PAUSED", LCD_RED, LCD_BLACK);
+    }
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }

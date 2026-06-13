@@ -30,6 +30,9 @@ virtualFolder:
                 - path: Core/Src/adc_driver.c
                 - path: Core/Src/ILI9488.c
                 - path: Core/Src/spi.c
+                - path: Core/Src/scope.c
+                - path: Core/Src/pga.c
+                - path: Core/Src/encoder.c
               folders: []
     - name: Drivers
       files: []

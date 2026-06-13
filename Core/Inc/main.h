@@ -67,8 +67,8 @@ void Error_Handler(void);
 #define PGA2_2_GPIO_Port GPIOE
 #define PGA2_0_Pin GPIO_PIN_14
 #define PGA2_0_GPIO_Port GPIOE
-#define PGA2__1_Pin GPIO_PIN_15
-#define PGA2__1_GPIO_Port GPIOE
+#define PGA2_1_Pin GPIO_PIN_15
+#define PGA2_1_GPIO_Port GPIOE
 #define LCD_RST_Pin GPIO_PIN_4
 #define LCD_RST_GPIO_Port GPIOD
 #define LCD_DC_Pin GPIO_PIN_5

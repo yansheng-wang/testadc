@@ -55,7 +55,7 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, PGA1_2_Pin|PGA1_0_Pin|PGA1_1_Pin|PGA2_2_Pin
-                          |PGA2_0_Pin|PGA2__1_Pin, GPIO_PIN_RESET);
+                          |PGA2_0_Pin|PGA2_1_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_RESET);
@@ -64,13 +64,19 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, LCD_DC_Pin|SPI1_CS_Pin|LCD_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PGA1_2_Pin PGA1_0_Pin PGA1_1_Pin PGA2_2_Pin
-                           PGA2_0_Pin PGA2__1_Pin */
+                           PGA2_0_Pin PGA2_1_Pin */
   GPIO_InitStruct.Pin = PGA1_2_Pin|PGA1_0_Pin|PGA1_1_Pin|PGA2_2_Pin
-                          |PGA2_0_Pin|PGA2__1_Pin;
+                          |PGA2_0_Pin|PGA2_1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LCD_RST_Pin */
   GPIO_InitStruct.Pin = LCD_RST_Pin;

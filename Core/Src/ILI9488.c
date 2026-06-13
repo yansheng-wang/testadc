@@ -50,7 +50,7 @@ void LCD_SetRotation(ILI9488_Rotation rotation) {
         case ILI9488_ROTATION_0:   madctl = 0x48; break;
         case ILI9488_ROTATION_90:  madctl = 0x28; break;
         case ILI9488_ROTATION_180: madctl = 0x88; break;
-        case ILI9488_ROTATION_270: madctl = 0xE8; break;
+        case ILI9488_ROTATION_270: madctl = 0x68; break;
         default:                   madctl = 0x48; rotation = ILI9488_ROTATION_0; break;
     }
     LCD_WriteCommand(0x36); LCD_WriteData(madctl);
@@ -78,9 +78,6 @@ void LCD_Init(void){
     LCD_WriteCommand(0x11); HAL_Delay(120);
     LCD_WriteCommand(0x29); HAL_Delay(20);
     LCD_FillColor(LCD_BLACK);
-    LCD_FillRect(0, 0, 99, 19, LCD_BLUE);
-    LCD_FillRect(1, 1, 98, 18, LCD_WHITE);
-    LCD_DrawString(3, 3, "FPS:--", LCD_BLUE, LCD_WHITE);
 }
 void LCD_SPI_Init(void) { /* HW SPI1 done by MX_SPI1_Init */ }
 uint16_t LCD_ReadID(void) { return 0x9488; }
@@ -136,8 +133,8 @@ void LCD_DrawChar(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg) {
     LCD_Color565To666(color, rgb_fg); LCD_Color565To666(bg, rgb_bg);
     LCD_SetWindow(x, y, x + 5, y + 7); LCD_WriteCommand(0x2C);
     DC_HIGH(); CS_LOW();
-    for (uint8_t row = 0; row < 8; row++) {
-        for (int8_t col = 5; col >= 0; col--) {
+    for (int8_t row = 0; row < 8; row++) {
+        for (int8_t col = 0; col < 6; col++) {
             uint8_t bit = (ch[col] >> (7 - row)) & 1;
             uint8_t *rgb = bit ? rgb_fg : rgb_bg;
             SPI1_TxBuf(rgb, 3);
@@ -158,12 +155,12 @@ void LCD_DrawString(uint16_t x, uint16_t y, const char *str, uint16_t color, uin
     LCD_Color565To666(color, rgb_fg); LCD_Color565To666(bg, rgb_bg);
     LCD_SetWindow(x, y, x + total_w - 1, y + 7); LCD_WriteCommand(0x2C);
     DC_HIGH(); CS_LOW();
-    for (uint8_t row = 0; row < 8; row++) {
-        for (int16_t ci = (int16_t)len - 1; ci >= 0; ci--) {
+    for (int8_t row = 0; row < 8; row++) {
+        for (int16_t ci = 0; ci < len; ci++) {
             char chc = str[ci]; if (chc < 32 || chc > 126) chc = ' ';
             const uint8_t *fc = font6x8[(uint8_t)(chc - 32)];
             SPI1_TxBuf(rgb_bg, 3);
-            for (int8_t col = 5; col >= 0; col--) {
+            for (int8_t col = 0; col < 6; col++) {
                 uint8_t bit = (fc[col] >> (7 - row)) & 1;
                 uint8_t *rgb = bit ? rgb_fg : rgb_bg;
                 SPI1_TxBuf(rgb, 3);

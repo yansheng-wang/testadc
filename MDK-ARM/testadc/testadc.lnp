@@ -10,6 +10,7 @@
 "testadc\tim.o"
 "testadc\stm32h7xx_it.o"
 "testadc\stm32h7xx_hal_msp.o"
+"testadc\scope.o"
 "testadc\stm32h7xx_hal_adc.o"
 "testadc\stm32h7xx_hal_adc_ex.o"
 "testadc\stm32h7xx_hal_rcc.o"

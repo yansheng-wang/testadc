@@ -1,4 +1,5 @@
-testadc/main.o: ..\Core\Src\main.c ..\Core\Inc\main.h \
+testadc/scope.o: ..\Core\Src\scope.c ..\Core\Inc\scope.h \
+  ..\Core\Inc\ILI9488.h ..\Core\Inc\main.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal.h \
   ..\Core\Inc\stm32h7xx_hal_conf.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_rcc.h \
@@ -30,6 +31,4 @@ testadc/main.o: ..\Core\Src\main.c ..\Core\Inc\main.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_spi_ex.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_tim.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_tim_ex.h \
-  ..\Core\Inc\adc.h ..\Core\Inc\dma.h ..\Core\Inc\spi.h \
-  ..\Core\Inc\tim.h ..\Core\Inc\gpio.h ..\Core\Inc\ILI9488.h \
-  ..\Core\Inc\adc_driver.h ..\Core\Inc\scope.h
+  ..\Core\Inc\spi.h ..\Core\Inc\gpio.h ..\Core\Inc\adc.h

@@ -598,6 +598,11 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32h7xx_hal_msp.c</FilePath>
             </File>
+            <File>
+              <FileName>scope.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\scope.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
