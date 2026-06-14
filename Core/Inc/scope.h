@@ -179,7 +179,7 @@ static inline float Scope_Raw2mV(int16_t raw) {
     /* 差分 ADC 16位有符号读数:
        0 = −Vref, 32768 = 0V, 65535 = +Vref
        直接用 (uint16_t)raw 保持符号正确 */
-    return 3.3f * ((float)(uint16_t)(raw) / 32768.0f - 1.0f) * 1000.0f;
+    return 3.3f * ((float)(uint16_t)(raw) / 32768.0f - 1.0f) * 1000.0f/1.1f;
 }
 
 #ifdef __cplusplus

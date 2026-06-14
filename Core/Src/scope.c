@@ -66,10 +66,7 @@ void Scope_Init(void) {
 static float ema_buf2 = 0.0f;
 
 void Scope_PushSample(int16_t raw1, int16_t raw2) {
-    /* 每次累积 EMA, 用于减去直流成份 */
-    if (g_scope.wr_idx == 0) ema_buf2 = (float)raw2;
-    ema_buf2 = ema_buf2 * 0.99f + (float)raw2 * 0.01f;
-    raw2 = (int16_t)((float)raw2 - ema_buf2);
+
 
     uint32_t idx = g_scope.wr_idx % SCOPE_BUF_LEN;
     g_scope.buf1[idx] = raw1;
